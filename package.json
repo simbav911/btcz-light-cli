@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "bitcore-lib-btcz": "^1.0.0"
+  }
+}

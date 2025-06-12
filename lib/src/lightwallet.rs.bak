@@ -1593,7 +1593,7 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
         }
         
         // BitcoinZ Fix: For shielded transactions, use our custom builder
-        if tx_type != BitcoinZTxType::TransparentToTransparent {
+        if tx_type != BitcoinZTxType::TransparentToTransparent && tx_type != BitcoinZTxType::Unknown {
             println!("BitcoinZ: Shielded transaction detected - type: {:?}", tx_type);
             println!("BitcoinZ: Using custom shielded transaction builder");
             
@@ -1633,83 +1633,17 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
                 }
             }
             
-            // Add shielded spends from wallet notes
-            for s_note in &s_notes {
-                // Extract merkle path from witness
-                let witness_path = s_note.witness.path()
-                    .ok_or("Failed to get merkle path from witness")?;
-                
-                let merkle_path = witness_path.auth_path
-                    .iter()
-                    .map(|(node, _)| *node)
-                    .collect::<Vec<_>>();
-                
-                // Get witness position from the path
-                let witness_position = witness_path.position as u64;
-                
-                shielded_builder.add_sapling_spend(
-                    s_note.extsk.expsk.clone(),
-                    s_note.diversifier,
-                    s_note.note.clone(),
-                    merkle_path,
-                    witness_position,
-                ).map_err(|e| format!("Failed to add sapling spend: {}", e))?;
-            }
-            
-            // Add shielded outputs from recipients
-            for (addr, value, memo) in &recepients {
-                if let address::RecipientAddress::Shielded(to) = addr {
-                    // Use the first ovk for encryption
-                    let ovk = self.keys.read().await.zkeys[0].extfvk.fvk.ovk;
-                    
-                    // Parse memo if provided
-                    let memo_bytes = match memo {
-                        Some(s) => utils::interpret_memo_string(s.clone())?,
-                        None => MemoBytes::empty(),
-                    };
-                    
-                    shielded_builder.add_sapling_output(
-                        ovk,
-                        to.clone(),
-                        *value,
-                        memo_bytes,
-                    ).map_err(|e| format!("Failed to add sapling output: {}", e))?;
-                }
-            }
-            
-            // Calculate change and add change output if needed
-            let total_in = utxos.iter().map(|u| u.value).sum::<u64>() +
-                          s_notes.iter().map(|n| n.note.value).sum::<u64>();
-            let total_out = recepients.iter().map(|(_, v, _)| u64::from(*v)).sum::<u64>() +
-                           u64::from(DEFAULT_FEE);
-            
-            if total_in > total_out {
-                let change = total_in - total_out;
-                
-                // Send change to first sapling address
-                let change_addr = self.keys.read().await.zkeys[0].zaddress.clone();
-                let ovk = self.keys.read().await.zkeys[0].extfvk.fvk.ovk;
-                
-                shielded_builder.add_sapling_output(
-                    ovk,
-                    change_addr,
-                    Amount::from_u64(change).unwrap(),
-                    MemoBytes::empty(),
-                ).map_err(|e| format!("Failed to add change output: {}", e))?;
-            }
-            
-            // Add orchard notes if any (future enhancement)
-            // For now, BitcoinZ focuses on Sapling transactions
-            if o_notes.len() > 0 {
-                return Err("BitcoinZ orchard transactions are not yet supported. Please use sapling addresses.".to_string());
+            // TODO: Add shielded spends and outputs here when we have the necessary data
+            // For now, we'll return an error for actual shielded transactions
+            if s_notes.len() > 0 || s_out > 0 {
+                println!("BitcoinZ: Shielded inputs/outputs detected but not yet fully implemented");
+                println!("Note: The shielded transaction builder is ready but needs integration with wallet data");
+                return Err("BitcoinZ shielded transactions are being implemented. Please use transparent addresses for now.".to_string());
             }
             
             // Build the transaction
-            println!("BitcoinZ: Building shielded transaction with {} inputs and {} outputs", 
-                     utxos.len() + s_notes.len(), recepients.len());
             match shielded_builder.build(&prover, DEFAULT_FEE) {
                 Ok(raw_tx) => {
-                    println!("BitcoinZ: Successfully built shielded transaction, size: {} bytes", raw_tx.len());
                     // Compute txid
                     use sha2::{Sha256, Digest as Sha2Digest};
                     let mut hasher = Sha256::new();
@@ -1962,6 +1896,99 @@ impl<P: consensus::Parameters + Send + Sync + 'static> LightWallet<P> {
                  raw_tx.get(2).unwrap_or(&0),
                  raw_tx.get(3).unwrap_or(&0));
         
+        // BitcoinZ Fix: For shielded transactions, use our custom builder
+        if tx_type != BitcoinZTxType::TransparentToTransparent {
+            println!("BitcoinZ: Shielded transaction detected - type: {:?}", tx_type);
+            println!("BitcoinZ: Using custom shielded transaction builder");
+            
+            // Import the shielded builder
+            use crate::bitcoinz_v4_shielded::BitcoinZShieldedBuilder;
+            
+            // Create a new shielded builder
+            let mut shielded_builder = BitcoinZShieldedBuilder::new(
+                self.config.get_params().clone(),
+                target_height,
+            );
+            
+            // Add transparent inputs from utxos
+            for utxo in &utxos {
+                let outpoint = utxo.to_outpoint();
+                let coin = TxOut {
+                    value: Amount::from_u64(utxo.value).unwrap(),
+                    script_pubkey: Script { 0: utxo.script.clone() },
+                };
+                
+                match address_to_sk.get(&utxo.address) {
+                    Some(sk) => {
+                        shielded_builder.add_transparent_input(outpoint, coin, *sk)
+                            .map_err(|e| format!("Failed to add transparent input: {}", e))?;
+                    }
+                    None => {
+                        return Err(format!("Couldn't find the secret key for taddr {}", utxo.address));
+                    }
+                }
+            }
+            
+            // Add transparent outputs from recipients
+            for (addr, value, _) in &recepients {
+                if let address::RecipientAddress::Transparent(taddr) = addr {
+                    shielded_builder.add_transparent_output(taddr.clone(), *value)
+                        .map_err(|e| format!("Failed to add transparent output: {}", e))?;
+                }
+            }
+            
+            // TODO: Add shielded spends and outputs here when we have the necessary data
+            // For now, we'll return an error for actual shielded transactions
+            if s_notes.len() > 0 || s_out > 0 {
+                println!("BitcoinZ: Shielded inputs/outputs detected but not yet fully implemented");
+                println!("Note: The shielded transaction builder is ready but needs integration with wallet data");
+                return Err("BitcoinZ shielded transactions are being implemented. Please use transparent addresses for now.".to_string());
+            }
+            
+            // Build the transaction
+            match shielded_builder.build(&prover, DEFAULT_FEE) {
+                Ok(raw_tx) => {
+                    // Compute txid
+                    use sha2::{Sha256, Digest as Sha2Digest};
+                    let mut hasher = Sha256::new();
+                    hasher.update(&raw_tx);
+                    let hash1 = hasher.finalize();
+                    let mut hasher2 = Sha256::new();
+                    hasher2.update(&hash1);
+                    let hash2 = hasher2.finalize();
+                    let mut txid_bytes = [0u8; 32];
+                    txid_bytes.copy_from_slice(&hash2);
+                    txid_bytes.reverse();
+                    
+                    // Broadcast the transaction
+                    let broadcast_result = broadcast_fn(raw_tx.clone().into_boxed_slice()).await?;
+                    
+                    // Mark UTXOs as spent (same as transparent-only)
+                    {
+                        let mut txs = self.txns.write().await;
+                        for utxo in utxos {
+                            let spent_utxo = txs
+                                .current
+                                .get_mut(&utxo.txid)
+                                .unwrap()
+                                .utxos
+                                .iter_mut()
+                                .find(|u| utxo.txid == u.txid && utxo.output_index == u.output_index)
+                                .unwrap();
+                            use zcash_primitives::transaction::TxId;
+                            spent_utxo.unconfirmed_spent = Some((TxId::from_bytes(txid_bytes), u32::from(target_height)));
+                        }
+                    }
+                    
+                    self.send_progress.write().await.is_send_in_progress = false;
+                    return Ok((broadcast_result, raw_tx));
+                }
+                Err(e) => {
+                    println!("BitcoinZ: Failed to build shielded transaction: {}", e);
+                    return Err(format!("Failed to build BitcoinZ shielded transaction: {}", e));
+                }
+            }
+        }
         
         // BitcoinZ Fix: For transparent-only transactions, analyze the binding signature
         if is_transparent_only && raw_tx.len() >= 64 {

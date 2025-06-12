@@ -1,17 +1,48 @@
 /// BitcoinZ JavaScript Bridge
 /// 
-/// This module bridges to the BitcoinZ JavaScript library to create
-/// properly formatted transactions that BitcoinZ nodes will accept.
+/// This module interfaces with bitcore-lib-btcz through Node.js to generate
+/// BitcoinZ-compatible shielded transaction components.
 
 use std::process::Command;
-use serde::{Deserialize, Serialize};
+use serde::{Serialize, Deserialize};
+use serde_json;
+use hex;
 use zcash_primitives::{
     consensus::{BlockHeight, Parameters},
     legacy::TransparentAddress,
     transaction::components::{Amount, OutPoint, TxOut},
+    sapling::PaymentAddress,
+    memo::MemoBytes,
 };
-use zcash_client_backend::encoding::AddressCodec;
+use zcash_client_backend::encoding::{AddressCodec, encode_payment_address};
 use secp256k1::SecretKey;
+
+#[derive(Debug, Serialize)]
+struct JsRequest {
+    action: String,
+    params: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsResponse {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tx_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<ShieldedOutputJs>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShieldedOutputJs {
+    cv: String,
+    cmu: String,
+    ephemeral_key: String,
+    enc_ciphertext: String,
+    out_ciphertext: String,
+    zkproof: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JsTransactionResult {
@@ -22,7 +53,100 @@ struct JsTransactionResult {
     error: Option<String>,
 }
 
-/// Build a BitcoinZ transaction using the JavaScript library
+/// Call the JavaScript bridge to process a request
+fn call_js_bridge(request: &JsRequest) -> Result<JsResponse, String> {
+    let request_json = serde_json::to_string(request)
+        .map_err(|e| format!("Failed to serialize request: {}", e))?;
+    
+    println!("BitcoinZ JS Bridge: Calling with request: {}", request_json);
+    
+    // Find the script path
+    let script_path = std::env::current_dir()
+        .map_err(|e| format!("Failed to get current directory: {}", e))?
+        .join("btcz-shielded-bridge.js");
+    
+    if !script_path.exists() {
+        return Err(format!("BitcoinZ shielded bridge script not found at {:?}", script_path));
+    }
+    
+    let output = Command::new("node")
+        .arg(script_path)
+        .arg(&request_json)
+        .output()
+        .map_err(|e| format!("Failed to execute Node.js: {}", e))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Node.js script failed: {}", stderr));
+    }
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    println!("BitcoinZ JS Bridge: Response: {}", stdout);
+    
+    serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse response: {} (output: {})", e, stdout))
+}
+
+/// Generate a BitcoinZ-compatible shielded output using the JS bridge
+pub fn generate_shielded_output<P: Parameters>(
+    params: &P,
+    to_address: &PaymentAddress,
+    amount: Amount,
+    memo: &MemoBytes,
+) -> Result<ShieldedOutputComponents, String> {
+    // Encode the payment address
+    let to_addr_str = encode_payment_address(
+        params.hrp_sapling_payment_address(),
+        to_address
+    );
+    
+    let params = serde_json::json!({
+        "to_address": to_addr_str,
+        "amount": u64::from(amount),
+        "memo": hex::encode(memo.as_slice()),
+    });
+    
+    let request = JsRequest {
+        action: "create_output".to_string(),
+        params,
+    };
+    
+    let response = call_js_bridge(&request)?;
+    
+    if !response.success {
+        return Err(response.error.unwrap_or_else(|| "Unknown error".to_string()));
+    }
+    
+    let output = response.output
+        .ok_or_else(|| "No output in response".to_string())?;
+    
+    Ok(ShieldedOutputComponents {
+        cv: hex::decode(&output.cv)
+            .map_err(|e| format!("Failed to decode cv: {}", e))?,
+        cmu: hex::decode(&output.cmu)
+            .map_err(|e| format!("Failed to decode cmu: {}", e))?,
+        ephemeral_key: hex::decode(&output.ephemeral_key)
+            .map_err(|e| format!("Failed to decode ephemeral_key: {}", e))?,
+        enc_ciphertext: hex::decode(&output.enc_ciphertext)
+            .map_err(|e| format!("Failed to decode enc_ciphertext: {}", e))?,
+        out_ciphertext: hex::decode(&output.out_ciphertext)
+            .map_err(|e| format!("Failed to decode out_ciphertext: {}", e))?,
+        zkproof: hex::decode(&output.zkproof)
+            .map_err(|e| format!("Failed to decode zkproof: {}", e))?,
+    })
+}
+
+/// Components of a shielded output
+pub struct ShieldedOutputComponents {
+    pub cv: Vec<u8>,
+    pub cmu: Vec<u8>,
+    pub ephemeral_key: Vec<u8>,
+    pub enc_ciphertext: Vec<u8>,
+    pub out_ciphertext: Vec<u8>,
+    pub zkproof: Vec<u8>,
+}
+
+/// Build a BitcoinZ transaction using the JavaScript library (legacy)
 pub fn build_bitcoinz_js_tx<P: Parameters>(
     params: &P,
     inputs: Vec<(OutPoint, TxOut, SecretKey)>,
@@ -126,4 +250,25 @@ fn secret_key_to_wif(sk_bytes: &[u8]) -> Result<String, String> {
     data.extend_from_slice(&hash2[..4]);
     
     Ok(data.to_base58())
+}
+
+#[derive(Debug)]
+pub struct TransparentInput {
+    pub txid: String,
+    pub vout: u32,
+    pub script_pubkey: String,
+    pub amount: u64,
+}
+
+#[derive(Debug)]
+pub struct TransparentOutput {
+    pub address: String,
+    pub amount: u64,
+}
+
+#[derive(Debug)]
+pub struct ShieldedOutput {
+    pub address: String,
+    pub amount: u64,
+    pub memo: Vec<u8>,
 }

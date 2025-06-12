@@ -14,12 +14,27 @@ pub mod bitcoinz_js_bridge;
 pub mod bitcoinz_v4_no_sig;
 pub mod bitcoinz_patch;
 pub mod bitcoinz_binding_fix;
+pub mod bitcoinz_v4_shielded; // Complex API issues with v0.7
+// pub mod bitcoinz_shielded_tx;
+// pub mod bitcoinz_shielded_sighash;
+pub mod bitcoinz_shielded_builder_simple;
+pub mod bitcoinz_shielded_simplified;
+pub mod bitcoinz_shielded_patch;
+
+// #[cfg(test)]
+// mod bitcoinz_shielded_tests;
 pub mod blaze;
 pub mod commands;
 pub mod compact_formats;
 pub mod grpc_connector;
 pub mod lightclient;
 pub mod lightwallet;
+pub mod bitcoinz_compat;
+pub mod bitcoinz_compat_v2;
+pub mod bitcoinz_edwards_bellman;
+
+#[cfg(test)]
+mod test_edwards_serialization;
 
 #[cfg(feature = "embed_params")]
 #[derive(RustEmbed)]

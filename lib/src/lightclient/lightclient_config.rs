@@ -23,7 +23,7 @@ use zcash_primitives::{
 
 use crate::{grpc_connector::GrpcConnector, lightclient::checkpoints};
 
-pub const DEFAULT_SERVER: &str = "http://127.0.0.1:9067";
+pub const DEFAULT_SERVER: &str = "http://93.107.37.216:9067";
 pub const WALLET_NAME: &str = "bitcoinz-wallet.dat";
 pub const LOGFILE_NAME: &str = "bitcoinz-wallet.debug.log";
 pub const DEFAULT_ANCHOR_OFFSET: u32 = 1;

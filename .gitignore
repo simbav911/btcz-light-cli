@@ -1,11 +1,16 @@
-# Rust
-target/
-Cargo.lock
+# Rust build artifacts
+/target/
 **/*.rs.bk
+Cargo.lock
+
+# But include release binary
+!/target/release/
+/target/release/*
+!/target/release/bitcoinz-light-cli
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
@@ -14,20 +19,18 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
-# Build artifacts
-*.deb
-*.dmg
-*.msi
-*.exe
-*.app
-*.zip
-*.tar.gz
-
-# Logs
+# Wallet data
+*.dat
 *.log
+*.debug
 
-# Test data
-test-data/
+# Test files
+test_*.py
+*.hex
+shield_output.txt
+decode_edwards.py
+analyze_bitcoinz_tx.py
 
-# Local config
-.env
+# Temporary files
+tmp/
+temp/
